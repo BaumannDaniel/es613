@@ -1,0 +1,12 @@
+tutorial.py
+
+/build
+/test_data
+/.settings
+/sptemp.egg-info
+
+*.pyc
+*.mp4
+/.project
+/.pydevproject
+/es613/__pycache__
