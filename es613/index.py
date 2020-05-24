@@ -8,33 +8,22 @@ This module contains classes for indexing data
 
 Classes:
     SpatialIndex
-    PandasQuadtree
-    _SecondaryQuadtree1
+    RNL_SecondaryQuadtree
     Rectangle
     QuadtreeDivison
     
 Dependencies:
-    pandas
-    shapely
+
 
 Todo:
     
 """
 
-from typing import List
 from abc import ABC, abstractmethod
-
-import pandas as pd
-import shapely.geometry as sg
 
 class SpatialIndex(ABC):
     """
     Abstract class defining methods implemented by spatial index classes
-    
-    Attributes:
-        df (pandas.DataFrame):
-        geometry_column (object): The column in @df holding the shapely geometry objects
-        bbox (List[float]): Defining the area for the index [xmin, ymin, xmax, ymax]
     """
     
     @abstractmethod
@@ -45,96 +34,28 @@ class SpatialIndex(ABC):
     def remove(self):
         pass
     
-    
-class PandasQuadtree(SpatialIndex):
-    """This class provides a quadtree index for shapely.geometry objects stored in the column of a pandas.DataFrame object
-    
-    Attributes:
-        df (pandas.DataFrame): the dataframe for which the index will be greater
-        geometry_column (str): the name of the geometry column in @df
-        bbox (shapely.geometry.box): The extent for which the index will be created
-        capacity (int): the maximum number of geometries, a node in the index can reference. DEFAULT=8  
-    
-    """
-    
-    def __init__(self, df:pd.DataFrame, geometry_column:object, bbox:sg.box=None, capacity=8):
-        """
-        Args:
-            df (pandas.DataFrame): the dataframe for which the index will be greater
-            geometry_column (str): the name of the geometry column in @df
-            bbox (shapely.geometry.box, optional): The extent for which the index will be created.
-                If no extent is passed. the extend will be calculated which will increase the instantiation time
-            capacity (int): the maximum number of geometries, a node in the index can reference. DEFAULT=8
-            
-        """
-        self.df = df
-        self.geometry_column = geometry_column
-        self.bbox = bbox
-        self.capacity = capacity
-        self._qdt = _SecondaryQuadtree1(Rectangle(*bbox.bounds), capacity)
         
-        for i, row in self.df.iterrows():
-            self._qdt.insert(row[self.geometry_column], i)
-            
-    def insert(self, geometry:object, row_index:object):
-        """ This method inserts a geometry object into the tree
-        
-        Args:
-            geometry (shapely.geometry): The geometry object
-            row_index (object): The index of the corresponding row in the PandasQuadtree.df dataframe
-        """
-        self._qdt.insert(geometry, row_index)
-    
-    def remove(self):
-        pass
-    
-    def range_query_candidates(self, geometry:object):
-        """
-        Args:
-            geometry (shapely.geometry): The query geometry
-            
-        Returns:
-            List[object]: returns List with ids of rows in the PandasQuadtree.df dataframe,
-                for which the topological predicate with the @geometry argument could be False.
-                The method only returns candidates. To only receive ids of rows for which the
-                topological predicate 'disjoint' is False, use the PandasQuadtree.range_query method.
-        """
-        return self._qdt.range_query(geometry)
-    
-    def range_query(self, geometry:object):
-        """
-        Args:
-            geometry (shapely.geometry): The query geometry
-            
-        Returns:
-            List[object]: returns List with ids of rows in the PandasQuadtree.df dataframe,
-                for which the topological predicate with the @geometry argument is False.
-        """
-        candidates = self.range_query_candidates(geometry)
-        return [pl for pl in candidates if not self.df.loc[pl][self.geometry_column].disjoint(geometry)]
-        
-        
-class _SecondaryQuadtree1(object):
+class RNL_SecondaryQuadtree(SpatialIndex):
     """
     This class provides a quadtree index using the extent of the indexed geometries.
     The items are stored in the nodes as well as the leaves of the tree.
-    This implies faster build and insert times with slower query times.
+    This implies faster insert times with slower query times.
     """
-    def __init__(self, bbox:"Rectangle", capacity:int):
+    def __init__(self, bbox:"Rectangle", capacity:int=8):
         """
         Args:
             bbox (index.Rectangle): The extent for which the quadtree will be created
-            capacity (int): the maximum number of geometries, a node in the index can reference.
+            capacity (int): the maximum number of geometries, a node in the index can reference. DEFAULT=8
         """
-        self._bbox:"Rectangle" = bbox
-        self._capacity:int = capacity
-        self._geometries:object = []
-        self._placeholders:object = []
-        self._divided:boolean = False
+        self.bbox:"Rectangle" = bbox
+        self.capacity:int = capacity
+        self.geometries:object = []
+        self.placeholders:object = []
+        self.divided:boolean = False
         
     def insert(self, geom:object, placeholder:object) -> bool:
-        """ This method inserts an item into the tree. The geometry of the inserted item msut not
-        be disjoint with the _SecondaryQuadtree1._bbox.
+        """ This method inserts an item into the tree. The geometry of the inserted item must not
+        be disjoint with the RNL_SecondaryQuadtree.bbox.
         
         Args:
             geom (shapely.geometry or index.Rectangle): The geomtery of the inserted item
@@ -146,21 +67,54 @@ class _SecondaryQuadtree1(object):
         if not isinstance(geom, Rectangle):
             geom = Rectangle(*geom.bounds)
         
-        if self._bbox.disjoint(geom):
+        if self.bbox.disjoint(geom):
             return False
         
-        if len(self._geometries) < self._capacity:
-            self._geometries.append(geom)
-            self._placeholders.append(placeholder)
+        if len(self.geometries) < self.capacity:
+            self.geometries.append(geom)
+            self.placeholders.append(placeholder)
             return True
             
-        if self._divided or self.subdivide():
-            return any([box.insert(geom, placeholder) for box in self._boxlist])
+        if self.divided or self._subdivide():
+            return any([box.insert(geom, placeholder) for box in self.boxlist])
         
-        self._geometries.append(geom)
-        self._placeholders.append(placeholder)
+        self.geometries.append(geom)
+        self.placeholders.append(placeholder)
+        
+    def remove(self):
+        pass
+    
+    def range_query(self, geom):
+        """This method returns the placeholder of all stored items, for which the extent is not disjoint
+            with the extent of @geom.
             
-    def subdivide(self) -> bool:
+        Note:
+            This method only returns the placeholders of candidates which could intersect with the @geom.
+            
+        Args:
+            geom (shapely.geometry or index.Rectangle): The query geometry
+            
+        Returns:
+            List[object]: returns List with placeholders of items in the index for which the topological predicate 'disjoint',
+                compared to the extent of @ggeom is False.
+        
+        """
+        if not isinstance(geom, Rectangle):
+            geom = Rectangle(*geom.bounds)
+        
+        candidates = [pl for pl, g in zip(self.placeholders, self.geometries) if not g.disjoint(geom)]
+        
+        if self.divided:
+            pl_list = [box.range_query(geom) for box in self.boxlist if not geom.disjoint(box.bbox)]
+            pl_list.append(candidates)
+            pl_list_flattend = [val for sublist in pl_list for val in sublist]
+            pl_list_flattend_unique = list(set(pl_list_flattend))
+            return pl_list_flattend_unique
+        
+        else:
+            return candidates
+            
+    def _subdivide(self) -> bool:
         """This method turns the quadtree object into a node and creates four leafs for this node.
         These leafes are named:
             self._northwest
@@ -175,16 +129,16 @@ class _SecondaryQuadtree1(object):
         Returns:
             bool: Returns True if subdivision was performed, else returns False
         """
-        rdiv:RectangleDivision = self._bbox.division()
+        rdiv:RectangleDivision = self.bbox.division()
         
         # check for equal geometries
-        if len(self._geometries) > 1:
+        if len(self.geometries) > 1:
             
-            for i in range(len(self._geometries)):
+            for i in range(len(self.geometries)):
                 
                 break_check = False
-                for x in range(i+1, len(self._geometries)):
-                    if not (self._geometries[i] == self._geometries[x]):
+                for x in range(i+1, len(self.geometries)):
+                    if not (self.geometries[i] == self.geometries[x]):
                         break_check=True
                         break
                 if break_check:
@@ -193,40 +147,13 @@ class _SecondaryQuadtree1(object):
             else:
                 return False
         
-        self._divided = True
-        self._northwest = _SecondaryQuadtree1(rdiv.northwest, self._capacity)
-        self._northeast = _SecondaryQuadtree1(rdiv.northeast, self._capacity)
-        self._southeast = _SecondaryQuadtree1(rdiv.southeast, self._capacity)
-        self._southwest = _SecondaryQuadtree1(rdiv.southwest, self._capacity)
-        self._boxlist = [self._northwest, self._northeast, self._southeast, self._southwest]
+        self.divided = True
+        self.northwest = RNL_SecondaryQuadtree(rdiv.northwest, self.capacity)
+        self.northeast = RNL_SecondaryQuadtree(rdiv.northeast, self.capacity)
+        self.southeast = RNL_SecondaryQuadtree(rdiv.southeast, self.capacity)
+        self.southwest = RNL_SecondaryQuadtree(rdiv.southwest, self.capacity)
+        self.boxlist = [self.northwest, self.northeast, self.southeast, self.southwest]
         return True
-        
-    def range_query(self, geom):
-        """This method returns the placeholder of all stored items, for which the extent is not disjoint
-            with the extent of @geom.
-            
-        Args:
-            geom (shapely.geometry or index.Rectangle): The query geometry
-            
-        Returns:
-            List[object]: returns List with placeholders of items in the index for which the topological predicate 'disjoint',
-                compared to the extent of @ggeom is False.
-        
-        """
-        if not isinstance(geom, Rectangle):
-            geom = Rectangle(*geom.bounds)
-        
-        candidates = [pl for pl, g in zip(self._placeholders, self._geometries) if not g.disjoint(geom)]
-        
-        if self._divided:
-            pl_list = [box.range_query(geom) for box in self._boxlist if not geom.disjoint(box._bbox)]
-            pl_list.append(candidates)
-            pl_list_flattend = [val for sublist in pl_list for val in sublist]
-            pl_list_flattend_unique = list(set(pl_list_flattend))
-            return pl_list_flattend_unique
-        
-        else:
-            return candidates
         
         
 class Rectangle(object):
@@ -347,11 +274,4 @@ class RectangleDivision(object):
                 RectangleDivison[2] == Rectangle.southeast
                 RectangleDivison[3] == Rectangle.southwest
         """
-        return self.boxlist[key]
-        
-        
-#class QuadtreeHelper:
-        
-        
-    
-    
+        return self.boxlist[key] 

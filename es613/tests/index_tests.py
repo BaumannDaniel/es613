@@ -19,16 +19,17 @@ import shapely.geometry as sg
 
 from es613 import index
 
-class Test_PandasQuadtree(unittest.TestCase):
+class Test_RNL_SecondaryQuadtree(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
         
         # PandasQuadtree objects
         cls.qdt1 = None
-        cls.qdt2 = None
         
-        # test query polygons for qdt2
+        # gemeinden_df
+        cls.gemeinden_df = None
+        # test query polygons
         cls.query_polygon_df = None
         
         # defining directories and files
@@ -37,24 +38,22 @@ class Test_PandasQuadtree(unittest.TestCase):
         cls.gemeinden_selection_features = cls.test_data_directory / "gemeinden_bayern_selection.geojson"
         cls.gemeinden_query = cls.test_data_directory / "gemeinden_query.geojson"
         
-        # defining PandasQuadtree1
-        xmin, ymin, xmax, ymax = 0.0, 0.0, 10.0, 10.0
-        geometries = [sg.Point(random.uniform(xmin, xmax), random.uniform(ymin, ymax)) for _ in range(100)]
-        ids = ["id{}".format(i) for i in range(100)]
-        cls.df1 = pd.DataFrame({"id":ids, "geometry":geometries})
-        cls.df1.set_index("id", drop=False, inplace=True)
-        cls.bbox1 = sg.box(xmin, ymin, xmax, ymax)
-        cls.qdt1 = index.PandasQuadtree(cls.df1, "geometry", capacity=10, bbox=cls.bbox1)
-        
         # defining PandasQuadtree2
         cls.gemeinden_df = pd.DataFrame(columns=["OBJID", "BEZ_GEM", "geometry"])
         with open(cls.gemeinden_selection_features) as features_json:
             gemeinden_dict = json.load(features_json)
             cls.gemeinden_bbox = gemeinden_dict["bbox"]
+            cls.gemeinden_bbox = index.Rectangle(*cls.gemeinden_bbox)
+            cls.qdt1 = index.RNL_SecondaryQuadtree(cls.gemeinden_bbox)
+            
             for row in gemeinden_dict["features"]:
-                df_row = {"OBJID":row["properties"]["OBJID"], "BEZ_GEM":row["properties"]["BEZ_GEM"], "geometry":sg.shape(row["geometry"])}
+                row_objid = row["properties"]["OBJID"]
+                row_bez_gem = row["properties"]["BEZ_GEM"]
+                row_geometry = sg.shape(row["geometry"])
+                df_row = {"OBJID":row_objid, "BEZ_GEM":row_bez_gem, "geometry":row_geometry}
                 cls.gemeinden_df = cls.gemeinden_df.append(df_row, ignore_index=True)
-        cls.qdt2 = index.PandasQuadtree(cls.gemeinden_df, "geometry", bbox=sg.box(*cls.gemeinden_bbox), capacity=10)
+                cls.qdt1.insert(row_geometry, row_objid)
+            cls.gemeinden_df.set_index("OBJID", drop=False, inplace=True)
                 
         # defining test query polygons for PandasQuadtree2
         cls.query_polygon_df = pd.DataFrame(columns=["id", "overlap_id", "geometry"])
@@ -70,14 +69,15 @@ class Test_PandasQuadtree(unittest.TestCase):
         
     def test_init(self):
         pass
-         
+             
     def test_range_query(self):
         
         for i, row in self.query_polygon_df.iterrows():
             geom = row["geometry"]
             overlap_ids = row["overlap_id"]
             overlap_ids = overlap_ids.split("|")
-            query_ids = [self.gemeinden_df.loc[i]["OBJID"] for i in self.qdt2.range_query(geom)]
+            query_candiate_ids = self.qdt1.range_query(geom)
+            query_ids = [i for i in query_candiate_ids if not geom.disjoint(self.gemeinden_df.loc[i]["geometry"])]
             overlap_ids.sort()
             query_ids.sort()
             self.assertEqual(overlap_ids, query_ids)
